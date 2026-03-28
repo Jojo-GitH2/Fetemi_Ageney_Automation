@@ -3,10 +3,12 @@ import { supabase, useAuth } from '../context/AuthContext';
 import { formatScheduledDate } from '../utils/dateUtils';
 import { 
   FolderOpen, Filter, CalendarDays, SortDesc, SortAsc, 
-  LayoutList, CheckCircle2, Clock, LayoutGrid, Rocket, PlusCircle, PenTool
+  LayoutList, CheckCircle2, Clock, LayoutGrid, Rocket, PlusCircle, PenTool, RefreshCw, AlertCircle
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ContentRenderer } from './ContentRenderer';
+import { mockN8nService } from '../services/mockN8nService';
+import { toast } from 'sonner';
 
 export const CampaignExplorer: React.FC<{ onNavigateWizard: () => void }> = ({ onNavigateWizard }) => {
   const { session } = useAuth();
@@ -19,6 +21,7 @@ export const CampaignExplorer: React.FC<{ onNavigateWizard: () => void }> = ({ o
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
   const [loadingMaster, setLoadingMaster] = useState(true);
+  const [failedCampaignIds, setFailedCampaignIds] = useState<Set<string>>(new Set());
   
   // Detail View States
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
@@ -33,6 +36,41 @@ export const CampaignExplorer: React.FC<{ onNavigateWizard: () => void }> = ({ o
   useEffect(() => {
     if (selectedCampaignId) fetchDetails(selectedCampaignId);
   }, [selectedCampaignId]);
+
+  const handleRetry = async (postToRetry: any) => {
+    toast.info(`Retrying post for ${postToRetry.platform}...`);
+    try {
+      const token = session?.access_token;
+      if (!token) throw new Error("Authentication token not found.");
+  
+      await mockN8nService.retrySinglePost({
+        campaign_id: postToRetry.campaign_id,
+        posts: [{
+          post_id: postToRetry.id,
+          edited_content: postToRetry.content,
+          publish_status: 'Scheduled', // Send as scheduled
+          scheduled_for: new Date(Date.now() + 5 * 60 * 1000).toISOString(), // Reschedule for 5 mins from now
+          platform: postToRetry.platform,
+        }]
+      }, token);
+  
+      await supabase.from('social_posts').update({ 
+        publish_status: 'Scheduled',
+        scheduled_for: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+      }).eq('id', postToRetry.id);
+
+      toast.success("Post has been re-queued successfully! Refreshing...");
+      fetchDetails(postToRetry.campaign_id);
+
+    } catch (error) {
+      console.error('Retry failed:', error);
+      if (error instanceof Error) {
+        toast.error(`Failed to retry post: ${error.message}`);
+      } else {
+        toast.error('Failed to retry post. See console for details.');
+      }
+    }
+  };
 
   const fetchCampaigns = async () => {
     if (!session?.user?.id) return;
@@ -49,13 +87,29 @@ export const CampaignExplorer: React.FC<{ onNavigateWizard: () => void }> = ({ o
     const to = from + itemsPerPage - 1;
     query = query.range(from, to);
     
-    const { data, count } = await query;
-    if (data) setCampaigns(data);
+    const { data: campaignsData, count } = await query;
+
+    if (campaignsData) {
+      setCampaigns(campaignsData);
+      
+      const campaignIds = campaignsData.map(c => c.id);
+      if (campaignIds.length > 0) {
+        const { data: failedPosts } = await supabase
+          .from('social_posts')
+          .select('campaign_id')
+          .in('campaign_id', campaignIds)
+          .eq('publish_status', 'Failed');
+          
+        if (failedPosts) {
+          setFailedCampaignIds(new Set(failedPosts.map(p => p.campaign_id)));
+        }
+      }
+    }
+    
     if (count !== null) setTotalCount(count);
     
-    // Auto-select first if none selected
-    if (data && data.length > 0 && !selectedCampaignId) {
-       setSelectedCampaignId(data[0].id);
+    if (campaignsData && campaignsData.length > 0 && !selectedCampaignId) {
+       setSelectedCampaignId(campaignsData[0].id);
     }
     setLoadingMaster(false);
   };
@@ -157,26 +211,36 @@ export const CampaignExplorer: React.FC<{ onNavigateWizard: () => void }> = ({ o
              </div>
           ) : (
              <div className="divide-y divide-border">
-                {campaigns.map(camp => (
-                   <button 
-                      key={camp.id}
-                      onClick={() => setSelectedCampaignId(camp.id)}
-                      className={`w-full text-left p-5 transition-all outline-none ${selectedCampaignId === camp.id ? 'bg-primary-50 border-l-4 border-l-primary-600' : 'hover:bg-slate-50 border-l-4 border-l-transparent'}`}
-                   >
-                      <div className="flex items-start justify-between mb-2">
-                         <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider border ${getStatusColor(camp.status)}`}>
-                            {camp.status || 'Draft'}
-                         </span>
-                         <span className="text-xs text-textMuted flex items-center gap-1">
-                            <CalendarDays size={12} />
-                            {new Date(camp.created_at).toLocaleDateString()}
-                         </span>
-                      </div>
-                      <p className="font-semibold text-textMain text-sm line-clamp-2 leading-relaxed">
-                         {camp.base_idea || `Campaign ${camp.id.substring(0,8)}`}
-                      </p>
-                   </button>
-                ))}
+                {campaigns.map(camp => {
+                   const hasFailedPosts = failedCampaignIds.has(camp.id);
+                   return (
+                     <button 
+                        key={camp.id}
+                        onClick={() => setSelectedCampaignId(camp.id)}
+                        className={`w-full text-left p-5 transition-all outline-none ${selectedCampaignId === camp.id ? 'bg-primary-50 border-l-4 border-l-primary-600' : 'hover:bg-slate-50 border-l-4 border-l-transparent'}`}
+                     >
+                        <div className="flex items-center justify-between mb-2">
+                           <div className="flex items-center">
+                              <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider border ${getStatusColor(camp.status)}`}>
+                                 {camp.status || 'Draft'}
+                              </span>
+                              {hasFailedPosts && (
+                                <span title="Contains failed posts" className="ml-2 flex items-center px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 border border-red-200">
+                                   <AlertCircle size={10} />
+                                </span>
+                              )}
+                           </div>
+                           <span className="text-xs text-textMuted flex items-center gap-1">
+                              <CalendarDays size={12} />
+                              {new Date(camp.created_at).toLocaleDateString()}
+                           </span>
+                        </div>
+                        <p className="font-semibold text-textMain text-sm line-clamp-2 leading-relaxed">
+                           {camp.base_idea || `Campaign ${camp.id.substring(0,8)}`}
+                        </p>
+                     </button>
+                   );
+                })}
              </div>
           )}
         </div>
@@ -278,6 +342,15 @@ export const CampaignExplorer: React.FC<{ onNavigateWizard: () => void }> = ({ o
                                        {formatScheduledDate(post.scheduled_for)}
                                     </span>
                                  )}
+                                 {post.publish_status === 'Failed' && (
+                                    <button
+                                      onClick={() => handleRetry(post)}
+                                      className="mt-2 flex items-center justify-center gap-2 text-xs font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-md py-1.5 px-2 transition-all"
+                                    >
+                                      <RefreshCw size={12} />
+                                      Retry Post
+                                    </button>
+                                  )}
                               </div>
                               <div className="flex-1 text-sm bg-white p-6 rounded-lg border border-slate-100 shadow-inner overflow-y-auto max-h-[350px]">
                                  <ContentRenderer platform={post.platform} content={post.content} />
