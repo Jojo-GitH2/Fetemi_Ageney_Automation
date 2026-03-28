@@ -22,7 +22,7 @@ export const DashboardOverview: React.FC = () => {
         { count: failCount }
       ] = await Promise.all([
         supabase.from('campaigns').select('*', { count: 'exact', head: true }).eq('user_id', session!.user.id),
-        supabase.from('social_posts').select('*', { count: 'exact', head: true }).eq('publish_status', 'Scheduled'),
+        supabase.from('social_posts').select('*', { count: 'exact', head: true }).eq('publish_status', 'Scheduled').gt('scheduled_for', new Date().toISOString()),
         supabase.from('social_posts').select('*', { count: 'exact', head: true }).eq('publish_status', 'Published'),
         supabase.from('social_posts').select('*', { count: 'exact', head: true }).eq('publish_status', 'Failed')
       ]);
