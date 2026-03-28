@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { supabase, useAuth } from '../context/AuthContext';
 import { formatScheduledDate } from '../utils/dateUtils';
 import { 
-  FolderOpen, Search, Filter, CalendarDays, SortDesc, SortAsc, 
-  LayoutList, CheckCircle2, AlertCircle, Clock, LayoutGrid, Rocket, PlusCircle, PenTool
+  FolderOpen, Filter, CalendarDays, SortDesc, SortAsc, 
+  LayoutList, CheckCircle2, Clock, LayoutGrid, Rocket, PlusCircle, PenTool
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { ContentRenderer } from './ContentRenderer';
